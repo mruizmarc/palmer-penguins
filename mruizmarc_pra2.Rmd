@@ -1,0 +1,360 @@
+---
+title: 'Tipologia i cicle de vida de les dades'
+author: "Autor: Marc Ruiz Marcos"
+date: "Gener 2022"
+output:
+  html_document:
+    highlight: default
+    number_sections: yes
+    theme: cosmo
+    toc: yes
+    toc_depth: 2
+    includes:
+      in_header: 
+  word_document: default
+  pdf_document:
+    highlight: zenburn
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Descripció del dataset
+
+Tractarem un problema de clustering. He triat una base de dades similar al conegut Iris, [Palmer Penguins](https://github.com/allisonhorst/palmerpenguins), originalment publicat [aquí](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0090081) al 2014. Es tracta d'un dataset amb informació de pingüins que viuen a unes illes de l'Antàrtida. He triat aquest dataset per la simplicitat del conjunt de dades (té poques columnes) i perquè trobo que és un bon exemple per mètodes no supervisats.
+
+Aquest dataset s'ha publicat amb Creative Commons 0 ([CC0, No Rights Reserved](https://creativecommons.org/share-your-work/public-domain/cc0/)).
+
+
+
+# Integració i selecció de les dades d'interès a analitzar
+
+Començo important el joc de dades a partir de les indicacions donades a GitHub:
+```{r message= FALSE, warning=FALSE, results='hide'}
+install.packages('remotes',repos = 'http://cran.us.r-project.org')
+remotes::install_github('allisonhorst/palmerpenguins')
+library(palmerpenguins)
+library(dplyr)
+library(cluster)
+```
+
+Fem una primera inspecció de les dades:
+```{r message=FALSE, warning=FALSE}
+head(penguins)
+summary(penguins)
+```
+Tenim:
+
+* `species`: Espècie de cada pingüí, hi ha tres nivells: Adelie, Chinstrap i Gentoo (igual que a `iris` hi ha tres categories)
+* `island`: Illa on viu cada pingüí, també hi ha tres nivells: Biscoe, Dream i Torgersen.
+* `bill_length_mm` i `bill_depth_mm`: Llargada i alçada del pic de cada pingüí, respectivament, en mm. (variables quantitatives) 
+* `flipper_length_mm`: Llargada de l'aleta del pingüí
+* `body_mass_g`: Pes del pingüí (grams)
+* `sex`: sexe del pingüí (mascle o femella)
+* `any`: l'any en què es va recollir la informació
+
+L'objectiu serà classificar els pingüins segons la seva espècie (de forma no supervisada, és a dir, ignorant a priori que coneixem l'espècie de cada pingüí. Només faré servir aquesta informació per a contrastar l'efectivitat del model.)
+
+Podem descartar l'any en què es va recollir la informació, que no ens serveix per a res.
+
+
+# Neteja de les dades
+
+## Elements buits
+Ja hem pogut veure al `head` que tenim valors buits. Com que tenim suficients observacions i els valors buits són en més d'un atribut, podem prescindir d'aquestes observacions:
+
+```{r message=FALSE, warning=FALSE}
+penguins <- na.omit(penguins)
+```
+
+## Valors extrems
+Busquem outliers mirant un boxplot (primer caldrà escalar per a tenir les variables en un rang semblant):
+```{r}
+boxplot(scale(penguins[, 3:6]))
+```
+
+No n'hi ha cap.
+
+# Anàlisi de les dades
+## Exploració de les dades i planificació de les anàlisis a aplicar
+Anem a fer una primera exploració de les dades per a tenir una idea de com de fàcil serà la clusterització.
+
+```{r}
+library(ggplot2)
+ggplot(penguins, aes(flipper_length_mm, bill_length_mm, 
+                     color = species, size = body_mass_g)) +
+                    geom_point(alpha = 0.75) + facet_wrap(~sex)
+```
+
+Es pot apreciar fàcilment les diferències entre espècies, tot i que hi ha una mica de solapament. Veiem que els Adelie tenen aletes i becs més curts, els Chinstrap tenen aletes lleugerament més llargues però becs notablement més llargs, i els Gentoo tenen tant les aletes com els becs més llargs i pesen més.
+
+Si comparem l'alçada i llargada dels becs la diferència és encara més clara, (pel que a les representacions gràfiques a partir d'ara faré servir aquestes dues variables):
+
+```{r}
+ggplot(penguins, aes(bill_depth_mm, bill_length_mm, 
+                     color = species, size = body_mass_g)) +
+                    geom_point(alpha = 0.75) + facet_wrap(~sex)
+```
+
+Ara bé, sense separar pel sexe els punts se solapen força més:
+
+```{r}
+ggplot(penguins, aes(bill_depth_mm, bill_length_mm, color=species)) + geom_point()
+```
+
+Deixo de banda la illa en la que viuen, ja que l'espècie i la illa on viuen estan extremadament relacionades:
+```{r}
+ggplot(penguins, aes(island, fill=species)) + geom_bar()
+```
+
+
+Compararem tres mètodes per a la categorització dels pingüins: kmeans, mètode jeràrquic (amb dues distàncies diferents).
+
+
+## Aplicació dels mètodes d'anàlisi
+
+Selecciono només les columnes quantitatives, ometent també l'any d'observació:
+
+```{r}
+x <- penguins[, 3:6]
+```
+
+
+### K-means
+Tantejo el nombre de clústers òptim:
+
+```{r}
+# Defineixo un seed per a que quadrin els càlculs en diferents execucions
+set.seed(123)
+d <- daisy(x)
+res <- rep(0, 10)
+for (i in c(2, 3, 4, 5, 6, 7, 8, 9, 10)){
+  fit <- kmeans(x, i)
+  y_cluster <- fit$cluster
+  sk <- silhouette(y_cluster, d)
+  res[i] <- mean(sk[, 3])
+}
+
+plot(2:10, res[2:10], type='o', col='blue', pch=0, xlab='Nombre de clústers', ylab='Silueta')
+```
+
+Els millors resultats s'han obtingut amb 2 clústers, de forma no intuitiva ja que sabem que hi ha 3 espècies. Fem servir el mètode elbow per veure si coincideix en fer servir k=2.
+
+```{r}
+res <- rep(0, 10)
+for (i in c(2,3,4,5,6,7,8,9,10)){
+     fit    <- kmeans(x, i)
+     res[i] <- fit$tot.withinss
+}
+plot(2:10,res[2:10],type="o",col="blue",pch=0,xlab="Número de clusters",ylab="tot.tot.withinss")
+```
+
+El mètode elbow apunta a triar k=4, que és quan comença a estabilitzar-se la millora. Provo també la funció kmeansruns de fpc:
+
+Primer amb el criteri de la silueta mitjana i després amb el criteri de Calinski-Habrasz:
+```{r}
+library(fpc)
+fit_asw <- kmeansruns(x, krange = 1:10, criterion = 'asw')
+# k = 2 és raonable (valor amb ) millors resultats
+fit_asw$bestk
+plot(1:10,fit_asw$crit,type="o",col="blue",pch=0,xlab="Nombre de clústers",ylab="Criteri silueta mitjana")
+
+fit_ch  <- kmeansruns(x, krange = 1:10, criterion = 'ch')
+fit_ch$bestk
+# Ara bé, k = 10 és una mica sospitós
+plot(1:10,fit_ch$crit,type="o",col="blue",pch=0,xlab="Nombre de clústers",ylab="Criteri Calinski-Harabasz")
+```
+
+Veient [com es construeix el criteri Calinski-Harabasz](https://es.mathworks.com/help/stats/clustering.evaluation.calinskiharabaszevaluation-class.html#bt0y0hg-8), és relativament normal que la corba de més amunt sigui monòtona. La monotonia ens diu que "com més clústers millor" (fins arribar al cas límit en què el nombre de clústers és igual al nombre d'observacions). No obstant, ens interessa trobar el valor de k més eficient, és a dir, el menor valor de k que dóna millors resultats respecte la magnitud de k. En altres paraules, volem la derivada del gràfic anterior, o directament comparar-lo amb la funció f(k) = k. Triem aquesta segona opció:
+
+```{r}
+plot(1:10,fit_asw$crit/1:10,type="o",col="orange",pch=0,xlab="Número de clústers",ylab="Criteri silueta mitja")
+plot(1:10,fit_ch$crit/1:10,type="o",col="orange",pch=0,xlab="Número de clústers",ylab="Criteri Calinski-Harabasz")
+
+```
+
+Per tant, el valor de k més "eficient", en ambdós casos, és de k=2.
+
+De totes formes, com que sabem que les dades són de 3 espècies, em decanto per fer servir k=3 (el compararem amb k=2 com a comprovació).
+
+```{r}
+penguins_fit3 <- kmeans(x, 3)
+y_cluster3 <- penguins_fit3$cluster
+
+plot(x[c(1,2)], col=as.factor(penguins$species))
+plot(x[c(1,2)], col=y_cluster3)
+```
+
+Mirem l'eficàcia del mètode i veiem que efectivament no és gaire bona:
+
+```{r}
+table(y_cluster3, penguins$species)
+100*(80+22+94)/333
+```
+Donada la similitud entre alguns exemplars de pingüins de diferent espècie, segurament ajudés "inflar" cada categoria espècie amb més exemplars a partir de les dades que ja tenim, per així tenir més dades que passar a kmeans.
+
+Provem amb k=2:
+
+```{r}
+penguins_fit2 <- kmeans(x, 2)
+y_cluster2 <- penguins_fit2$cluster
+
+plot(x[c(1,2)], col=as.factor(penguins$species))
+plot(x[c(1,2)], col=y_cluster2)
+```
+
+Sembla una molt millor clusterització, comprovem l'eficàcia:
+
+```{r}
+table(y_cluster2, penguins$species)
+```
+
+No es pot donar un % d'efectivitat a priori perquè en aquest cas tenim 2 clústers i en realitat hi ha 3 categories, però podem extreure conclusions. Gairebé tots els Gentoo han anat a parar al primer clúster (només 19 pingüins del primer clúster no són Gentoo, i 111 sí ho són), i tant els Adelie com els Chinstrap han anat a parar al segon clúster. És raonable anomenar, doncs, al primer clúster Gentoo i al segon Adelie + Chinstrap. *En aquest context*, s'han encertat 111 Gentoos, 132 Adelies i 63 Chinstraps, de manera que podem considerar que l'agregació ha tingut un èxit de:
+```{r}
+100*(132 + 63 + 111) / (132 + 63 + 111 + 14 + 5 + 8)
+```
+
+### Mètode d'agregació jeràrquic (dist. euclidiana)
+
+Trio k=3 ja que és el nombre d'espècies amb el que estem treballant. He consultat [la documentació de la funció fviz_dend](https://www.rdocumentation.org/packages/factoextra/versions/1.0.7/topics/fviz_dend) per a representar el dendrograma.
+
+```{r message=FALSE, warning=FALSE}
+# install.packages('factoextra')
+library(factoextra)
+res.hc <- x %>%
+  scale() %>%
+  dist(method = 'euclidean') %>%
+  hclust(method = 'ward.D2')
+
+fviz_dend(res.hc, k = 3,
+          cex = 0.5, # mida etiqueta
+          k_colors = c("#2E9FDF", "#E7B800", "#FC4E07"),
+          color_labels_by_k = TRUE, # color labels by groups
+          rect = TRUE # Add rectangle around groups
+)
+```
+
+Vull comprovar l'eficàcia d'aquest mètode. Tallo l'arbre en 3 grups (clústers):
+
+```{r}
+hc_cluster <- cutree(res.hc, k=3)
+plot(x[c(1,2)], col=as.factor(penguins$species))
+plot(x[c(1,2)], col=hc_cluster)
+
+# Miro com es corresponen els clústers amb les espècies:
+table(hc_cluster, penguins$species)
+```
+Sembla un encert gairebé total. Efectivament, tenim una eficàcia de:
+
+```{r}
+100* (146+57+119)/(333)
+```
+Fent una inspecció visual als clústers veiem que un clúster està indiscutiblement aïllat (el dels Gentoo), mentre que els altres dos tenen força solapament:
+```{r}
+clusplot(x, hc_cluster, color=TRUE, shade=TRUE, labels=1, lines=0)
+```
+
+
+### Mètode d'agregació jeràrquic (dist. del màxim)
+
+No cal explicar gaire més, essencialment ara repeteixo el que he fet però canviant la distància emprada per l'algorisme. Ara fem servir la distància de Txebitxev o distància del màxim
+
+```{r}
+# Faig l'agregació igual que abans, només canviant la distància
+res.hc_max <- x %>%
+  scale() %>%
+  dist(method = 'maximum') %>%
+  hclust(method = 'ward.D2')
+
+fviz_dend(res.hc_max, k=3,
+          cex = 0.5,
+          kcolors = c("#2E9FDF", "#E7B800", "#FC4E07"),
+          color_labels_by_k = TRUE,
+          rect = TRUE)
+
+hc_max_cluster <- cutree(res.hc_max, k=3)
+
+# Miro l'eficàcia del mètode:
+table(hc_max_cluster, penguins$species)
+```
+
+Només ha categoritzat erròniament a 6 pingüins, amb el que l'eficàcia és de:
+```{r}
+100*(333-6)/(333)
+```
+
+També he provat amb la distància de Manhattan, però amb resultats molt semblants als obtinguts amb la distància del màxim o amb l'euclidiana, així que no compararé aquests resultats. Els resultats amb la distància de Manhattan han sigut:
+
+```{r}
+res.hc_man <- x %>%
+  scale() %>%
+  dist(method = 'manhattan') %>%
+  hclust(method = 'ward.D2')
+
+hc_man_cluster <- cutree(res.hc_man, k=3)
+table(hc_man_cluster, penguins$species)
+```
+
+
+# Representació dels resultats
+
+Em centraré en inspeccionar els pingüins en què la categorització ha fallat.
+
+| Mètode                      | Nombre de pingüins mal classificats | % Eficàcia |
+|-----------------------------|-------------------------------------|------------|
+| kmeans                      | 137                                 | 58.86      |
+| jeràrquic (dist. euclidiana)| 11                                  | 96.70      |
+| jeràrquic (dist. del màxim) | 6                                   | 98.20      |
+
+Amplio les dades amb una columna per a cada mètode, indicant si aquell pingüí s'ha encertat o no.
+```{r}
+
+comp <- penguins
+# Primer li dono un identificador a cada pingüí:
+comp$id <- seq.int(nrow(comp))
+
+# Creo una columna amb OK/KO en funció de si s'han categoritzat correctament.
+# Tots comencen estant OK:
+comp$kmeans <- 'OK'
+
+# I poso en KO els erronis:
+comp$kmeans[y_cluster3 == 1 & comp$species != 'Gentoo'] <- 'KO'
+comp$kmeans[y_cluster3 == 2 & comp$species != 'Chinstrap'] <- 'KO'
+comp$kmeans[y_cluster3 == 3 & comp$species != 'Adelie'] <- 'KO'
+
+# Faig el mateix amb els resultats dels altres dos mètodes:
+comp$hc_euc <- 'OK'
+comp$hc_euc[hc_cluster == 1 & comp$species != 'Adelie'] <- 'KO'
+comp$hc_euc[hc_cluster == 2 & comp$species != 'Gentoo'] <- 'KO'
+comp$hc_euc[hc_cluster == 3 & comp$species != 'Chinstrap'] <- 'KO'
+
+comp$hc_max <- 'OK'
+comp$hc_max[hc_max_cluster == 1 & comp$species != 'Adelie'] <- 'KO'
+comp$hc_max[hc_max_cluster == 2 & comp$species != 'Chinstrap'] <- 'KO'
+comp$hc_max[hc_max_cluster == 3 & comp$species != 'Gentoo'] <- 'KO'
+
+ggplot(comp, aes(x=bill_length_mm, y=bill_depth_mm, color=kmeans)) + 
+      geom_point() + scale_color_manual(values=c('#E60000','#999999'))
+
+ggplot(comp, aes(x=bill_length_mm, y=bill_depth_mm, color=hc_euc)) + 
+      geom_point() + scale_color_manual(values=c('#E69F00','#999999'))
+
+ggplot(comp, aes(x=bill_length_mm, y=bill_depth_mm, color=hc_max)) + 
+      geom_point() + scale_color_manual(values=c('#E600E6','#999999'))
+```
+
+Com podem veure, els pocs errors que s'han fet en les dues versions del mètode jeràrquic són més que acceptables, atès que es tracten d'exemplars de pingüins molt semblants a pingüins d'altres espècies (com a mínim en els aspectes que estem tractant). D'altra banda, kmeans amb k=3 ha comès errors en punts molt llunyans a les fronteres entre espècies.
+
+Aquesta anàlisi demostra que el conjunt dels Palmer Penguins és un bon joc de dades per a aplicar mètodes d'agregació, i que els mètodes jeràrquics han actuat (com a mínim en aquest conjunt de dades) de forma molt més efectiva que el mètode de kmeans.
+
+
+# Resolució del problema
+Després de comparar diversos mètodes, n'hem trobat un que aconsegueix una eficàcia del 98.2%, de manera que hem aconseguit construir un classificador prou bo pel nostre dataset. Al llarg de la pràctica s'han anat comentant les consideracions que s'han cregut oportunes.
+
+
+# Codi
+Aquesta pràctica s'ha realitzat amb RStudio, i el fitxer R-Markdown es pot trobar al següent repositori GitHub: https://github.com/mruizmarc/palmer-penguins.
+
